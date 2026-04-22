@@ -18,5 +18,5 @@ benchmarks/data/
 
 # Not for this repo
 turboquantlite/
-tests/
+/tests/
 LINKEDIN_POST.md
