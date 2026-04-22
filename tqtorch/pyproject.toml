@@ -1,0 +1,29 @@
+[project]
+name = "tqtorch"
+version = "0.1.0"
+description = "GPU-accelerated TurboQuant vector quantization for embeddings & RAG"
+readme = "README.md"
+authors = [
+    { name = "Kalyan Reddy Katla (WIPRO LIMITED)", email = "v-kkatla@microsoft.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.4",
+]
+
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.3"]
+dev = ["pytest>=8", "scipy>=1.12"]
+bench = [
+    "faiss-cpu>=1.7",
+    "h5py>=3.16.0",
+    "matplotlib>=3.7",
+    "pyturboquant>=0.1.1",
+    "sentence-transformers>=5.4.1",
+    "torchvision>=0.26.0",
+]
+all = ["tqtorch[langchain,dev,bench]"]
+
+[build-system]
+requires = ["uv_build>=0.9.30,<0.10.0"]
+build-backend = "uv_build"
