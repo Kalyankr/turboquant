@@ -1,0 +1,22 @@
+# Virtual environments
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Caches
+.mypy_cache/
+.pytest_cache/
+
+# Benchmark data (1.2 GB)
+benchmarks/data/
+
+# Not for this repo
+turboquantlite/
+tests/
+LINKEDIN_POST.md

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turboquantlite"
+version = "0.1.0"
+description = "Lightweight TurboQuant vector quantization with FAISS benchmarks"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+bench = ["faiss-cpu>=1.7", "matplotlib>=3.7"]
+dev = ["pytest>=7", "tqtorch"]
+
+[tool.setuptools]
+packages = ["turboquantlite"]
+
+[tool.uv.sources]
+tqtorch = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+    "tqtorch",
+]
