@@ -133,14 +133,13 @@ The **inner-product variant** (Algorithm 2) splits the bit budget:
 
 ## Benchmarks
 
-Run the benchmark script:
+Run the benchmark scripts from the root repository:
 
 ```bash
-uv run --extra bench python benchmarks/compare_faiss.py          # 10K vectors
-uv run --extra bench python benchmarks/compare_faiss.py --large  # 100K vectors
+uv run --extra bench python ../benchmarks/compare_faiss.py
 ```
 
-Or open the interactive notebook: `benchmarks/benchmark_vs_faiss.ipynb`
+Or open the interactive notebook: `../benchmarks/benchmark_vs_faiss.ipynb`
 
 | Method | Mem (MB) | R@1 | R@10 | Training |
 |--------|----------|-----|------|----------|
@@ -163,5 +162,7 @@ uv run --extra dev pytest tests/ -v
 - Optional: `langchain-core`, `faiss-cpu`, `matplotlib`, `scipy`
 
 ## License
+
+[MIT License](../LICENSE)
 
 MIT
