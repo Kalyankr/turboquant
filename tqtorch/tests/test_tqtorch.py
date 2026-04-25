@@ -199,7 +199,7 @@ class TestQJL:
         r = torch.randn(10, 32)
         signs = qjl_sign(r, S)
         assert signs.dtype == torch.int8
-        assert set(signs.unique().tolist()).issubset({-1, 0, 1})
+        assert set(signs.unique().tolist()).issubset({-1, 1})
 
 
 # ── Search Index ──────────────────────────────────────────────────────────────

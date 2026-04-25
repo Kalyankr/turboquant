@@ -98,7 +98,10 @@ def qjl_sign(residual: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
     -------
     signs : Tensor of int8, shape (n, d), values in {-1, +1}.
     """
-    return torch.sign(residual @ S.T).to(torch.int8)
+    proj = residual @ S.T
+    signs = torch.sign(proj)
+    signs[signs == 0] = 1  # QJL requires {-1, +1}, no zeros
+    return signs.to(torch.int8)
 
 
 def qjl_reconstruct(
