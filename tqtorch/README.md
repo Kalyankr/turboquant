@@ -2,7 +2,7 @@
 
 **GPU-accelerated TurboQuant vector quantization for embeddings & RAG.**
 
-A PyTorch-native implementation of Google's [TurboQuant](https://arxiv.org/abs/2501.XXXXX) algorithm — scalar quantization via random rotation + Lloyd-Max codebooks — with a FAISS-like API, bit-packing, save/load, and LangChain integration.
+A PyTorch-native implementation of Google's [TurboQuant](https://arxiv.org/abs/2504.19874) algorithm (Zandieh et al., 2025) — scalar quantization via random rotation + Lloyd-Max codebooks — with bit-packing, save/load, and LangChain integration.
 
 ## Features
 
