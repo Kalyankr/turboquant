@@ -281,3 +281,19 @@ class TestTurboQuantIndex:
         assert idx.ntotal == 50
         scores, _ = idx.search(torch.randn(2, d), k=10)
         assert scores.shape == (2, 10)
+
+
+class TestPackedFastPath:
+    """Vectorized pack/unpack for bits in {1, 2, 4} must match the loop path."""
+
+    @pytest.mark.parametrize("bits", [1, 2, 4])
+    @pytest.mark.parametrize("d", [7, 16, 17, 64, 128])
+    def test_fast_path_roundtrip(self, bits, d):
+        torch.manual_seed(bits * 100 + d)
+        n = 5
+        indices = torch.randint(0, 2**bits, (n, d), dtype=torch.uint8)
+        packed = pack_indices(indices, bits)
+        unpacked = unpack_indices(packed, bits, d)
+        assert torch.equal(indices, unpacked)
+        # Check size matches expectation
+        assert packed.shape == (n, packed_bytes_per_vector(d, bits))
