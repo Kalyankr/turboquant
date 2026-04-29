@@ -282,6 +282,65 @@ class TestTurboQuantIndex:
         scores, _ = idx.search(torch.randn(2, d), k=10)
         assert scores.shape == (2, 10)
 
+    def test_reconstruct(self):
+        d, n = 32, 100
+        torch.manual_seed(0)
+        db = torch.randn(n, d)
+        idx = TurboQuantIndex(dim=d, bits=4, metric="ip", seed=0)
+        idx.add(db)
+
+        # Single id
+        v = idx.reconstruct(7)
+        assert v.shape == (d,)
+
+        # Batch ids
+        ids = torch.tensor([0, 5, 50, 99])
+        V = idx.reconstruct(ids)
+        assert V.shape == (4, d)
+
+        # Reconstructions should approximate the original (norm-preserving)
+        approx = (V - db[ids]).norm(dim=1) / db[ids].norm(dim=1)
+        assert (approx < 0.5).all(), f"reconstruction error too large: {approx}"
+
+        # Out-of-range
+        with pytest.raises(IndexError):
+            idx.reconstruct(n + 5)
+
+    def test_remove(self):
+        d, n = 16, 50
+        torch.manual_seed(0)
+        db = torch.randn(n, d)
+        idx = TurboQuantIndex(dim=d, bits=3, metric="ip", seed=0)
+        idx.add(db)
+        idx.remove([0, 1, 2])
+        assert idx.ntotal == n - 3
+
+        # Search still works post-remove
+        scores, ids = idx.search(torch.randn(3, d), k=5)
+        assert scores.shape == (3, 5)
+        assert (ids < idx.ntotal).all()
+
+        # Remove all remaining
+        idx.remove(list(range(idx.ntotal)))
+        assert idx.ntotal == 0
+
+    def test_compute_dtype_fp16(self):
+        d, n = 32, 200
+        torch.manual_seed(0)
+        db = torch.randn(n, d)
+        q = torch.randn(5, d)
+        idx32 = TurboQuantIndex(dim=d, bits=4, metric="mse", seed=0)
+        idx16 = TurboQuantIndex(
+            dim=d, bits=4, metric="mse", seed=0, compute_dtype=torch.float16
+        )
+        idx32.add(db)
+        idx16.add(db)
+        s32, i32 = idx32.search(q, k=10)
+        s16, i16 = idx16.search(q, k=10)
+        # Top-1 should match in the vast majority of cases
+        match = (i32[:, 0] == i16[:, 0]).float().mean().item()
+        assert match >= 0.6, f"fp16 path diverged too much from fp32: {match}"
+
 
 class TestPackedFastPath:
     """Vectorized pack/unpack for bits in {1, 2, 4} must match the loop path."""

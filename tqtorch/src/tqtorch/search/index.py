@@ -45,12 +45,14 @@ class TurboQuantIndex:
         seed: int = 42,
         search_batch_size: int = 65_536,
         device: torch.device | str | None = None,
+        compute_dtype: torch.dtype = torch.float32,
     ):
         self.dim = dim
         self.bits = bits
         self.metric = metric
         self.seed = seed
         self.search_batch_size = search_batch_size
+        self.compute_dtype = compute_dtype
         self.device = (
             torch.device(device)
             if isinstance(device, str)
@@ -105,10 +107,29 @@ class TurboQuantIndex:
         self._ntotal += x.shape[0]
         self.last_add_time_ms = (time.perf_counter() - t0) * 1000
 
+    def _consolidate(self) -> None:
+        """Merge per-add chunk lists into single tensors. Idempotent.
+
+        Called lazily at search time so that repeated ``add()`` calls remain
+        O(batch) instead of O(total) per call. After consolidation each
+        chunk list has at most one entry.
+        """
+        if len(self._mse_packed_chunks) > 1:
+            self._mse_packed_chunks = [torch.cat(self._mse_packed_chunks, dim=0)]
+        if len(self._norms_chunks) > 1:
+            self._norms_chunks = [torch.cat(self._norms_chunks, dim=0)]
+        if len(self._qjl_packed_chunks) > 1:
+            self._qjl_packed_chunks = [torch.cat(self._qjl_packed_chunks, dim=0)]
+        if len(self._gammas_chunks) > 1:
+            self._gammas_chunks = [torch.cat(self._gammas_chunks, dim=0)]
+
     def _reconstruct_batch(self, start: int, end: int) -> torch.Tensor:
-        """Reconstruct vectors [start, end) from packed storage (MSE-only)."""
-        mse_packed = torch.cat(self._mse_packed_chunks, dim=0)[start:end]
-        norms = torch.cat(self._norms_chunks, dim=0)[start:end]
+        """Reconstruct vectors [start, end) from packed storage (MSE-only).
+
+        Assumes ``_consolidate()`` has been called.
+        """
+        mse_packed = self._mse_packed_chunks[0][start:end]
+        norms = self._norms_chunks[0][start:end]
 
         if isinstance(self._quant, InnerProductQuantizer):
             qt = QuantizedIP(
@@ -132,16 +153,19 @@ class TurboQuantIndex:
             return self._quant.dequantize(qt)
 
     def _estimate_ip_batch(
-        self, start: int, end: int, queries: torch.Tensor
+        self, start: int, end: int, queries: torch.Tensor, Sy: torch.Tensor,
     ) -> torch.Tensor:
         """Estimate inner products for vectors [start, end) using MSE + QJL.
 
+        Assumes ``_consolidate()`` has been called and that ``Sy`` is the
+        precomputed projection ``queries @ self._quant.S.T``.
+
         Returns scores of shape (nq, end-start).
         """
-        mse_packed = torch.cat(self._mse_packed_chunks, dim=0)[start:end]
-        norms = torch.cat(self._norms_chunks, dim=0)[start:end]
-        qjl_packed = torch.cat(self._qjl_packed_chunks, dim=0)[start:end]
-        gammas = torch.cat(self._gammas_chunks, dim=0)[start:end]
+        mse_packed = self._mse_packed_chunks[0][start:end]
+        norms = self._norms_chunks[0][start:end]
+        qjl_packed = self._qjl_packed_chunks[0][start:end]
+        gammas = self._gammas_chunks[0][start:end]
         qt = QuantizedIP(
             mse_packed=mse_packed,
             mse_norms=norms,
@@ -151,7 +175,89 @@ class TurboQuantIndex:
             bits=self.bits,
             seed=self.seed,
         )
-        return self._quant.estimate_inner_products(qt, queries)
+        return self._quant.estimate_inner_products(qt, queries, Sy=Sy)
+
+    def reconstruct(self, ids: torch.Tensor | list[int] | int) -> torch.Tensor:
+        """Reconstruct individual vectors by id (MSE-only).
+
+        Parameters
+        ----------
+        ids : int | list[int] | LongTensor of shape (k,)
+
+        Returns
+        -------
+        x_hat : Tensor of shape (k, dim)  (or (dim,) for a scalar id)
+        """
+        if self._ntotal == 0:
+            raise RuntimeError("Index is empty")
+        single = isinstance(ids, int)
+        if single:
+            ids_t = torch.tensor([ids], dtype=torch.long)
+        elif isinstance(ids, torch.Tensor):
+            ids_t = ids.to(torch.long).reshape(-1)
+        else:
+            ids_t = torch.tensor(list(ids), dtype=torch.long)
+        if (ids_t < 0).any() or (ids_t >= self._ntotal).any():
+            raise IndexError(
+                f"ids out of range [0, {self._ntotal}); got min={ids_t.min().item()},"
+                f" max={ids_t.max().item()}"
+            )
+        self._consolidate()
+        ids_t = ids_t.to(self.device)
+
+        mse_packed = self._mse_packed_chunks[0].index_select(0, ids_t)
+        norms = self._norms_chunks[0].index_select(0, ids_t)
+
+        if isinstance(self._quant, InnerProductQuantizer):
+            qt = QuantizedIP(
+                mse_packed=mse_packed,
+                mse_norms=norms,
+                qjl_packed=torch.empty(0),
+                gammas=torch.empty(0),
+                dim=self.dim,
+                bits=self.bits,
+                seed=self.seed,
+            )
+            x_hat = self._quant.dequantize(qt)
+        else:
+            qt = QuantizedMSE(
+                packed_indices=mse_packed,
+                norms=norms,
+                dim=self.dim,
+                bits=self.bits,
+                seed=self.seed,
+            )
+            x_hat = self._quant.dequantize(qt)
+        return x_hat[0] if single else x_hat
+
+    def remove(self, ids: torch.Tensor | list[int]) -> None:
+        """Remove vectors at the given ids.
+
+        WARNING: this rebuilds storage and renumbers the remaining vectors;
+        any cached ids from prior ``search()`` calls become invalid.
+        """
+        if self._ntotal == 0:
+            return
+        if isinstance(ids, torch.Tensor):
+            ids_t = ids.to(torch.long).reshape(-1)
+        else:
+            ids_t = torch.tensor(list(ids), dtype=torch.long)
+        if ids_t.numel() == 0:
+            return
+        if (ids_t < 0).any() or (ids_t >= self._ntotal).any():
+            raise IndexError("remove: ids out of range")
+
+        self._consolidate()
+        keep = torch.ones(self._ntotal, dtype=torch.bool)
+        keep[ids_t] = False
+        keep_dev = keep.to(self.device)
+
+        self._mse_packed_chunks = [self._mse_packed_chunks[0][keep_dev]]
+        self._norms_chunks = [self._norms_chunks[0][keep_dev]]
+        if self._qjl_packed_chunks:
+            self._qjl_packed_chunks = [self._qjl_packed_chunks[0][keep_dev]]
+            self._gammas_chunks = [self._gammas_chunks[0][keep_dev]]
+        self._ntotal = int(keep.sum().item())
 
     def search(
         self, queries: torch.Tensor, k: int = 10
@@ -179,21 +285,31 @@ class TurboQuantIndex:
         nq = queries.shape[0]
         k = min(k, self._ntotal)
 
+        # Consolidate per-add chunks once so batch slicing is O(batch).
+        self._consolidate()
+
         # Accumulate top-k across batches
         top_scores = torch.full((nq, k), -float("inf"), device=self.device)
         top_ids = torch.zeros(nq, k, dtype=torch.int64, device=self.device)
 
         use_ip_estimator = isinstance(self._quant, InnerProductQuantizer)
 
+        # Hoist the QJL projection of queries out of the per-batch loop.
+        Sy = queries @ self._quant.S.T if use_ip_estimator else None
+
+        # Cast queries for compute if a reduced precision was requested.
+        q_compute = queries.to(self.compute_dtype)
+
         offset = 0
         while offset < self._ntotal:
             end = min(offset + self.search_batch_size, self._ntotal)
 
             if use_ip_estimator:
-                batch_scores = self._estimate_ip_batch(offset, end, queries)
+                batch_scores = self._estimate_ip_batch(offset, end, queries, Sy)
             else:
                 batch_recon = self._reconstruct_batch(offset, end)  # (batch, d)
-                batch_scores = queries @ batch_recon.T  # (nq, batch)
+                batch_scores = q_compute @ batch_recon.to(self.compute_dtype).T
+                batch_scores = batch_scores.to(torch.float32)
 
             # Merge with running top-k
             combined_scores = torch.cat([top_scores, batch_scores], dim=1)
@@ -233,23 +349,25 @@ class TurboQuantIndex:
     def save(self, path: str | Path):
         """Save the index to a .pt file."""
         path = Path(path)
+        self._consolidate()
         state = {
             "dim": self.dim,
             "bits": self.bits,
             "metric": self.metric,
             "seed": self.seed,
             "search_batch_size": self.search_batch_size,
+            "compute_dtype": str(self.compute_dtype),
             "ntotal": self._ntotal,
-            "mse_packed": torch.cat(self._mse_packed_chunks, dim=0)
+            "mse_packed": self._mse_packed_chunks[0]
             if self._mse_packed_chunks
             else torch.empty(0),
-            "norms": torch.cat(self._norms_chunks, dim=0)
+            "norms": self._norms_chunks[0]
             if self._norms_chunks
             else torch.empty(0),
         }
         if self._qjl_packed_chunks:
-            state["qjl_packed"] = torch.cat(self._qjl_packed_chunks, dim=0)
-            state["gammas"] = torch.cat(self._gammas_chunks, dim=0)
+            state["qjl_packed"] = self._qjl_packed_chunks[0]
+            state["gammas"] = self._gammas_chunks[0]
         torch.save(state, path)
 
     @classmethod
@@ -258,6 +376,10 @@ class TurboQuantIndex:
     ) -> TurboQuantIndex:
         """Load an index from a .pt file."""
         state = torch.load(Path(path), map_location="cpu", weights_only=True)
+        # Backward-compat: older saves don't have compute_dtype
+        compute_dtype = torch.float32
+        if "compute_dtype" in state:
+            compute_dtype = getattr(torch, state["compute_dtype"].split(".")[-1], torch.float32)
         idx = cls(
             dim=state["dim"],
             bits=state["bits"],
@@ -265,6 +387,7 @@ class TurboQuantIndex:
             seed=state["seed"],
             search_batch_size=state["search_batch_size"],
             device=device,
+            compute_dtype=compute_dtype,
         )
         if state["ntotal"] > 0:
             mse_packed = state["mse_packed"].to(idx.device)

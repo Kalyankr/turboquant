@@ -130,7 +130,7 @@ class InnerProductQuantizer:
         return mse_bytes + qjl_bytes + norm_bytes + gamma_bytes
 
     def estimate_inner_products(
-        self, qt: QuantizedIP, queries: torch.Tensor
+        self, qt: QuantizedIP, queries: torch.Tensor, Sy: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Unbiased inner-product estimation using MSE + QJL.
 
@@ -140,6 +140,9 @@ class InnerProductQuantizer:
         ----------
         qt : QuantizedIP
         queries : Tensor of shape (nq, d).
+        Sy : optional precomputed (nq, d) tensor equal to ``queries @ self.S.T``.
+            Pass this when scoring a single query batch against many shards
+            of the database to avoid recomputing the projection per shard.
 
         Returns
         -------
@@ -150,7 +153,8 @@ class InnerProductQuantizer:
 
         # QJL correction: unbiased residual IP estimator
         signs = unpack_signs(qt.qjl_packed, qt.dim)  # (n, d) in {-1, +1}
-        Sy = queries @ self.S.T  # (nq, d)
+        if Sy is None:
+            Sy = queries @ self.S.T  # (nq, d)
         qjl_ip = signs.float() @ Sy.T  # (n, nq)
         scale = math.sqrt(math.pi / 2) / self.dim
         gammas = qt.gammas.float()  # (n,)
